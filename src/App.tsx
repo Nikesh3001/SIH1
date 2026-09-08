@@ -218,10 +218,11 @@ export default function App() {
       )}
 
       {/* Main Viewport Container */}
-      <main className="flex-1 p-3 overflow-hidden">
+      <main className="flex-1 overflow-hidden flex flex-col">
         {activeTab === 'monitoring' && (
           <CameraGrid
             cameras={cameras}
+            alerts={alerts}
             selectedCameraId={selectedCameraId}
             onSelectCamera={handleSelectCamera}
             onCaptureSnapshot={handleCaptureSnapshot}
