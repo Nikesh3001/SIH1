@@ -1,0 +1,7 @@
+{
+  "name": "IBVAP - Intelligent Border Video Analytics Platform",
+  "description": "AI-driven software-defined border surveillance platform converting IP CCTV into an intelligent network with real-time intrusion detection, ANPR, face recognition, and tactical command.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
