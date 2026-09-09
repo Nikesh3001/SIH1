@@ -8,7 +8,8 @@ export type AlertCategory =
   | 'LOITERING' 
   | 'NIGHT_MOVEMENT' 
   | 'UNUSUAL_GATHERING'
-  | 'PERIMETER_PROWLER';
+  | 'PERIMETER_PROWLER'
+  | 'MANUAL_ARCHIVE';
 
 export type AlertStatus = 'NEW' | 'ACKNOWLEDGED' | 'DISPATCHED' | 'RESOLVED';
 

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { SecurityAlert, Severity, AlertCategory } from '../types';
+import { SecurityAlert, Severity, AlertCategory, Camera } from '../types';
 import { 
   AlertTriangle, 
   ShieldAlert, 
@@ -16,12 +16,18 @@ import {
   Filter,
   Check,
   Zap,
-  ExternalLink
+  ExternalLink,
+  BrainCircuit,
+  Loader2,
+  RefreshCw,
+  Map as MapIcon,
+  Search as SearchIcon
 } from 'lucide-react';
 import { tacticalAudio } from '../utils/audio';
 
 interface AlertsPanelProps {
   alerts: SecurityAlert[];
+  cameras: Camera[];
   onAcknowledgeAlert: (alertId: string, officerName: string) => void;
   onDispatchQrf: (alertId: string, unitName: string) => void;
   onExportDossier: (alert: SecurityAlert) => void;
@@ -30,6 +36,7 @@ interface AlertsPanelProps {
 
 export const AlertsPanel: React.FC<AlertsPanelProps> = ({
   alerts,
+  cameras,
   onAcknowledgeAlert,
   onDispatchQrf,
   onExportDossier,
@@ -39,6 +46,9 @@ export const AlertsPanel: React.FC<AlertsPanelProps> = ({
   const [severityFilter, setSeverityFilter] = useState<'ALL' | Severity>('ALL');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'NEW' | 'ACKNOWLEDGED' | 'DISPATCHED' | 'RESOLVED'>('ALL');
   const [actionSuccessMsg, setActionSuccessMsg] = useState<string | null>(null);
+
+  const [isAssessing, setIsAssessing] = useState(false);
+  const [assessments, setAssessments] = useState<Record<string, { maps: string, search: string }>>({});
 
   const activeAlert = alerts.find(a => a.id === selectedAlertId) || alerts[0];
 
@@ -53,6 +63,37 @@ export const AlertsPanel: React.FC<AlertsPanelProps> = ({
     onDispatchQrf(alert.id, 'QRF Alpha-1 (Striker)');
     setActionSuccessMsg(`🚨 QRF Striker-1 Dispatched to ${alert.bopName} on VHF Channel 4!`);
     setTimeout(() => setActionSuccessMsg(null), 4000);
+  };
+
+  const handleGenerateAssessment = async () => {
+    if (!activeAlert) return;
+    const camera = cameras.find(c => c.id === activeAlert.cameraId);
+    if (!camera || !camera.lat || !camera.lng) {
+      alert("Coordinates not available for this camera.");
+      return;
+    }
+    
+    setIsAssessing(true);
+    try {
+      const res = await fetch('/api/threat-assessment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ alert: activeAlert, camera }),
+      });
+      const data = await res.json();
+      setAssessments(prev => ({
+        ...prev,
+        [activeAlert.id]: {
+          maps: data.geospatialAnalysis,
+          search: data.intelBrief
+        }
+      }));
+    } catch (e) {
+      console.error(e);
+      alert("Failed to generate assessment. Ensure your Gemini API Key is set.");
+    } finally {
+      setIsAssessing(false);
+    }
   };
 
   const handleAcknowledge = (alert: SecurityAlert) => {
@@ -247,6 +288,57 @@ export const AlertsPanel: React.FC<AlertsPanelProps> = ({
             <p className="text-slate-400 font-sans text-xs leading-relaxed">
               {activeAlert.details}
             </p>
+          </div>
+
+          {/* AI Threat Assessment Module */}
+          <div className="bg-indigo-950/20 border border-indigo-500/30 rounded-lg p-3">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2 text-indigo-400 font-bold font-mono-code text-xs">
+                <BrainCircuit className="w-4 h-4" />
+                <span>AI TACTICAL THREAT ASSESSMENT</span>
+              </div>
+              <button 
+                onClick={handleGenerateAssessment}
+                disabled={isAssessing}
+                className="flex items-center gap-1.5 px-2 py-1 bg-indigo-900/40 hover:bg-indigo-900/60 border border-indigo-500/50 rounded text-[10px] font-mono-code text-indigo-200 transition-colors disabled:opacity-50"
+              >
+                {isAssessing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                <span>{assessments[activeAlert.id] ? "RE-ASSESS" : "GENERATE"}</span>
+              </button>
+            </div>
+            
+            {isAssessing ? (
+              <div className="py-6 flex flex-col items-center justify-center text-indigo-400/70 font-mono-code text-xs">
+                <Loader2 className="w-6 h-6 animate-spin mb-2" />
+                <span>Running Geospatial & Intel Analysis...</span>
+                <span className="text-[9px] mt-1 opacity-70">Querying Google Maps & Search Grounding</span>
+              </div>
+            ) : assessments[activeAlert.id] ? (
+              <div className="flex flex-col gap-3 font-mono-code text-xs">
+                <div className="bg-slate-900/80 border border-slate-700/50 rounded p-2.5">
+                  <div className="flex items-center gap-1.5 mb-1 text-sky-400 font-bold border-b border-slate-700/50 pb-1">
+                    <MapIcon className="w-3.5 h-3.5" />
+                    <span>GEOSPATIAL TERRAIN ANALYSIS</span>
+                  </div>
+                  <div className="text-slate-300 leading-relaxed whitespace-pre-wrap font-sans text-xs">
+                    {assessments[activeAlert.id].maps}
+                  </div>
+                </div>
+                <div className="bg-slate-900/80 border border-slate-700/50 rounded p-2.5">
+                  <div className="flex items-center gap-1.5 mb-1 text-amber-400 font-bold border-b border-slate-700/50 pb-1">
+                    <SearchIcon className="w-3.5 h-3.5" />
+                    <span>LATEST CONTEXTUAL INTEL</span>
+                  </div>
+                  <div className="text-slate-300 leading-relaxed whitespace-pre-wrap font-sans text-xs">
+                    {assessments[activeAlert.id].search}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="py-4 text-center text-indigo-300/50 text-[11px] font-mono-code bg-slate-950/50 rounded border border-slate-800/50 border-dashed">
+                No active assessment for this incident. Click GENERATE to analyze.
+              </div>
+            )}
           </div>
 
           {/* Operational SOP Action Buttons */}

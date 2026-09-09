@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Camera, SecurityAlert, VisionFilterMode } from '../types';
 import { CameraStream } from './CameraStream';
+import { motion, AnimatePresence } from 'motion/react';
 import { 
   Grid2X2, 
   Square, 
@@ -23,20 +24,46 @@ interface CameraGridProps {
   cameras: Camera[];
   alerts: SecurityAlert[];
   selectedCameraId: string;
+  layoutMode: '1x1' | '2x2' | 'all';
+  onLayoutModeChange: (mode: '1x1' | '2x2' | 'all') => void;
   onSelectCamera: (camId: string) => void;
   onCaptureSnapshot: (dataUrl: string, camera: Camera) => void;
   onOpenFenceEditor: (camera: Camera) => void;
+  onSaveRecording?: (camera: Camera, durationSecs: number) => void;
 }
 
 export const CameraGrid: React.FC<CameraGridProps> = ({
   cameras,
   alerts,
   selectedCameraId,
+  layoutMode,
+  onLayoutModeChange,
   onSelectCamera,
   onCaptureSnapshot,
+  onOpenFenceEditor,
+  onSaveRecording,
 }) => {
-  const [layoutMode, setLayoutMode] = useState<'1x1' | '2x2' | 'all'>('all');
   const [cameraFilterModes, setCameraFilterModes] = useState<Record<string, VisionFilterMode>>({});
+  
+  // Recording State
+  const [recordingCameraId, setRecordingCameraId] = useState<string | null>(null);
+  const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
+
+  const handleToggleRecording = () => {
+    if (recordingCameraId === selectedCameraId) {
+      // Stop recording
+      if (onSaveRecording && recordingStartTime) {
+        const duration = Math.round((Date.now() - recordingStartTime) / 1000);
+        onSaveRecording(selectedCamera, duration);
+      }
+      setRecordingCameraId(null);
+      setRecordingStartTime(null);
+    } else {
+      // Start recording
+      setRecordingCameraId(selectedCameraId);
+      setRecordingStartTime(Date.now());
+    }
+  };
 
   const handleFilterModeChange = (camId: string, mode: VisionFilterMode) => {
     setCameraFilterModes(prev => ({
@@ -46,6 +73,18 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
   };
 
   const selectedCamera = cameras.find(c => c.id === selectedCameraId) || cameras[0];
+
+  const displayedCameras = layoutMode === '1x1' 
+    ? [selectedCamera]
+    : layoutMode === '2x2' 
+      ? cameras.slice(0, 4)
+      : cameras;
+
+  const gridClass = layoutMode === '1x1' 
+    ? 'grid-cols-1' 
+    : layoutMode === '2x2' 
+      ? 'grid-cols-1 md:grid-cols-2'
+      : 'grid-cols-2 xl:grid-cols-4 auto-rows-fr';
 
   return (
     <div className="flex flex-col h-full bg-slate-950 p-2 gap-2">
@@ -98,67 +137,75 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
         <div className="flex-1 flex flex-col min-w-0 bg-slate-900 border border-slate-800 rounded-lg overflow-hidden relative">
           <div className="absolute top-0 inset-x-0 h-10 bg-gradient-to-b from-black/60 to-transparent z-10 pointer-events-none"></div>
           
-          <div className="flex-1 p-1 bg-black overflow-y-auto">
-            {layoutMode === '1x1' ? (
-              <div className="h-full">
-                <CameraStream
-                  camera={selectedCamera}
-                  isFocused={true}
-                  filterMode={cameraFilterModes[selectedCamera.id] || 'day'}
-                  onFilterModeChange={(m) => handleFilterModeChange(selectedCamera.id, m)}
-                  onCaptureSnapshot={onCaptureSnapshot}
-                />
-              </div>
-            ) : layoutMode === '2x2' ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-1 h-full">
-                {cameras.slice(0, 4).map((cam) => (
-                  <div key={cam.id} onClick={() => onSelectCamera(cam.id)} className="h-full">
+          <div className="flex-1 p-1 bg-black overflow-hidden flex flex-col">
+            <div className={`grid gap-1 flex-1 ${gridClass}`}>
+              <AnimatePresence mode="popLayout">
+                {displayedCameras.map((cam) => (
+                  <motion.div
+                    key={cam.id}
+                    layout
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.95 }}
+                    transition={{ duration: 0.4, type: 'spring', bounce: 0.15 }}
+                    onClick={() => onSelectCamera(cam.id)}
+                    className="h-full min-h-[200px]"
+                  >
                     <CameraStream
                       camera={cam}
                       isFocused={cam.id === selectedCameraId}
+                      isRecording={recordingCameraId === cam.id}
                       filterMode={cameraFilterModes[cam.id] || 'day'}
                       onFilterModeChange={(m) => handleFilterModeChange(cam.id, m)}
                       onCaptureSnapshot={onCaptureSnapshot}
                     />
-                  </div>
+                  </motion.div>
                 ))}
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 h-full auto-rows-fr">
-                {cameras.map((cam) => (
-                  <div key={cam.id} onClick={() => onSelectCamera(cam.id)} className="h-full min-h-[200px]">
-                    <CameraStream
-                      camera={cam}
-                      isFocused={cam.id === selectedCameraId}
-                      filterMode={cameraFilterModes[cam.id] || 'day'}
-                      onFilterModeChange={(m) => handleFilterModeChange(cam.id, m)}
-                      onCaptureSnapshot={onCaptureSnapshot}
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
+              </AnimatePresence>
+            </div>
           </div>
           
-          <div className="absolute top-2 right-2 z-10 flex items-center gap-1 bg-black/60 backdrop-blur-sm p-1 rounded border border-slate-700/50">
+          <div className="absolute top-2 right-2 z-10 flex items-center gap-2">
             <button
-              onClick={() => setLayoutMode('1x1')}
-              className={`p-1.5 rounded transition-colors ${layoutMode === '1x1' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+              onClick={handleToggleRecording}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-[10px] font-bold font-mono-code transition-colors border backdrop-blur-sm shadow-lg ${
+                recordingCameraId === selectedCameraId
+                  ? 'bg-red-500/20 text-red-400 border-red-500/50 hover:bg-red-500/30 shadow-red-500/20'
+                  : 'bg-black/60 text-slate-300 border-slate-700/50 hover:text-white hover:bg-black/80'
+              }`}
             >
-              <Square className="w-3.5 h-3.5" />
+              {recordingCameraId === selectedCameraId ? (
+                <>
+                  <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>
+                  STOP REC
+                </>
+              ) : (
+                <>
+                  <Video className="w-3.5 h-3.5" />
+                  START REC
+                </>
+              )}
             </button>
-            <button
-              onClick={() => setLayoutMode('2x2')}
-              className={`p-1.5 rounded transition-colors ${layoutMode === '2x2' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-slate-200'}`}
-            >
-              <Grid2X2 className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={() => setLayoutMode('all')}
-              className={`p-1.5 rounded transition-colors ${layoutMode === 'all' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-slate-200'}`}
-            >
-              <LayoutGrid className="w-3.5 h-3.5" />
-            </button>
+            <div className="flex items-center gap-1 bg-black/60 backdrop-blur-sm p-1 rounded border border-slate-700/50">
+              <button
+                onClick={() => onLayoutModeChange('1x1')}
+                className={`p-1.5 rounded transition-colors ${layoutMode === '1x1' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+              >
+                <Square className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => onLayoutModeChange('2x2')}
+                className={`p-1.5 rounded transition-colors ${layoutMode === '2x2' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+              >
+                <Grid2X2 className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => onLayoutModeChange('all')}
+                className={`p-1.5 rounded transition-colors ${layoutMode === 'all' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         </div>
 
@@ -227,8 +274,8 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
             <span>AI ENGINE: <span className="text-emerald-400">RUNNING</span></span>
           </div>
           <div className="flex items-center gap-2">
-            <Video className="w-3.5 h-3.5 text-red-500 animate-pulse" />
-            <span className="text-slate-300">RECORDING: <span className="text-red-500">ACTIVE</span></span>
+            <Video className={`w-3.5 h-3.5 ${recordingCameraId ? 'text-red-500 animate-pulse' : 'text-slate-500'}`} />
+            <span className="text-slate-300">RECORDING: <span className={recordingCameraId ? 'text-red-500' : 'text-slate-500'}>{recordingCameraId ? 'ACTIVE' : 'IDLE'}</span></span>
           </div>
         </div>
       </div>

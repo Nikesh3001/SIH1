@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Camera, SecurityAlert } from '../types';
+import { APIProvider, Map, AdvancedMarker, Pin } from '@vis.gl/react-google-maps';
 import { 
   MapPin, 
   Eye, 
@@ -45,8 +46,8 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({
 
   // Simulated QRF Patrol Units
   const qrfUnits = [
-    { id: 'qrf-01', name: 'QRF Team Alpha (Striker-1)', x: 42, y: 48, status: 'DISPATCHED TO BREACH', channel: 'VHF-04' },
-    { id: 'qrf-02', name: 'QRF Team Bravo (Patrol-2)', x: 68, y: 70, status: 'ROUTINE PATROL', channel: 'VHF-02' },
+    { id: 'qrf-01', name: 'QRF Team Alpha (Striker-1)', x: 42, y: 48, lat: 32.7210, lng: 74.8450, status: 'DISPATCHED TO BREACH', channel: 'VHF-04' },
+    { id: 'qrf-02', name: 'QRF Team Bravo (Patrol-2)', x: 68, y: 70, lat: 32.6950, lng: 74.8620, status: 'ROUTINE PATROL', channel: 'VHF-02' },
   ];
 
   // Camera map positions relative to sector coordinates (0 to 100%)
@@ -102,11 +103,84 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({
 
         {/* Map Visual Canvas / SVG Stage */}
         <div className="flex-1 relative overflow-hidden bg-slate-950 tactical-grid flex items-center justify-center">
-          <svg
-            viewBox="0 0 1000 700"
-            className="w-full h-full object-cover"
-            style={{ transform: `scale(${zoomLevel})`, transition: 'transform 0.2s ease-out' }}
-          >
+          {mapLayer === 'satellite' ? (
+            <APIProvider apiKey={import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ""}>
+              <div className="absolute inset-0 w-full h-full">
+                <Map 
+                  mapId="DEMO_MAP_ID"
+                  defaultZoom={12} 
+                  defaultCenter={{ lat: 32.72, lng: 74.85 }} 
+                  mapTypeId={'satellite'}
+                  disableDefaultUI={true}
+                  internalUsageAttributionIds={["gmp_mcp_codeassist_v1_aistudio"]}
+                >
+                  {/* Cameras */}
+                  {cameras.map((cam) => (
+                    cam.lat && cam.lng && (
+                      <AdvancedMarker
+                        key={cam.id}
+                        position={{ lat: cam.lat, lng: cam.lng }}
+                        onClick={() => handleCameraClick(cam)}
+                        title={cam.name}
+                      >
+                        <div className={`p-1.5 rounded-full border-2 shadow-lg cursor-pointer ${cam.id === selectedCameraId ? 'bg-amber-500 border-white' : 'bg-sky-600 border-white'}`}>
+                          <CameraIcon className="w-4 h-4 text-white" />
+                        </div>
+                      </AdvancedMarker>
+                    )
+                  ))}
+
+                  {/* QRF Units */}
+                  {showQrfPatrols && qrfUnits.map((qrf) => (
+                    <AdvancedMarker
+                      key={qrf.id}
+                      position={{ lat: qrf.lat, lng: qrf.lng }}
+                      title={qrf.name}
+                    >
+                      <div className="flex items-center gap-2">
+                        <div className="bg-blue-600 border-2 border-white rounded-md p-1 shadow-lg animate-pulse">
+                          <Truck className="w-5 h-5 text-white" />
+                        </div>
+                        <div className="bg-black/80 px-2 py-0.5 rounded text-[10px] font-mono-code font-bold text-blue-300 border border-blue-500/50">
+                          {qrf.name}
+                        </div>
+                      </div>
+                    </AdvancedMarker>
+                  ))}
+                  
+                  {/* Active Alerts */}
+                  {activeAlerts.map(alert => {
+                    const cam = cameras.find(c => c.id === alert.cameraId);
+                    if (cam?.lat && cam?.lng) {
+                      return (
+                        <AdvancedMarker
+                          key={`gmap-alert-${alert.id}`}
+                          position={{ lat: cam.lat, lng: cam.lng }}
+                          onClick={() => onSelectAlert?.(alert)}
+                        >
+                          <div className="relative flex items-center justify-center">
+                            <div className="absolute w-12 h-12 bg-red-500/30 rounded-full animate-ping"></div>
+                            <div className="bg-red-600 border-2 border-white rounded-full p-1 shadow-[0_0_15px_rgba(220,38,38,0.8)]">
+                              <AlertTriangle className="w-5 h-5 text-white" />
+                            </div>
+                            <div className="absolute top-10 whitespace-nowrap bg-red-900/90 px-2 py-1 rounded text-xs font-bold text-white border border-red-500">
+                              ⚠️ {alert.category}
+                            </div>
+                          </div>
+                        </AdvancedMarker>
+                      );
+                    }
+                    return null;
+                  })}
+                </Map>
+              </div>
+            </APIProvider>
+          ) : (
+            <svg
+              viewBox="0 0 1000 700"
+              className="w-full h-full object-cover"
+              style={{ transform: `scale(${zoomLevel})`, transition: 'transform 0.2s ease-out' }}
+            >
             {/* Background Grid & Topo Terrain Contours */}
             <defs>
               <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
@@ -314,6 +388,7 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({
               );
             })}
           </svg>
+          )}
 
           {/* Map Compass Rose */}
           <div className="absolute top-4 right-4 bg-slate-900/90 border border-slate-800 p-2 rounded-lg text-center font-mono-code text-[11px] text-slate-400 pointer-events-none shadow-lg">

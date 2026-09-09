@@ -50,6 +50,7 @@ export default function App() {
   
   // Selection
   const [selectedCameraId, setSelectedCameraId] = useState<string>(cameras[0]?.id || 'cam-bop-01');
+  const [layoutMode, setLayoutMode] = useState<'1x1' | '2x2' | 'all'>('all');
   const [calibratingCamera, setCalibratingCamera] = useState<Camera | null>(null);
 
   // Snapshot Modal
@@ -102,6 +103,29 @@ export default function App() {
     });
   };
 
+  const handleSaveRecording = (camera: Camera, durationSecs: number) => {
+    const newAlert: SecurityAlert = {
+      id: `rec-${Date.now()}`,
+      eventId: `ARCHIVE-${Date.now()}`,
+      cameraId: camera.id,
+      cameraName: camera.name,
+      bopName: camera.bopName,
+      sector: camera.sector,
+      timestamp: new Date().toLocaleTimeString('en-US', { hour12: false }),
+      category: 'MANUAL_ARCHIVE',
+      severity: 'INFO',
+      detectedObject: `Manual Recording Archive (${durationSecs}s)`,
+      confidence: 1.0,
+      ruleTriggered: 'Operator Manual Log',
+      status: 'NEW',
+      details: `Operator initiated manual recording on ${camera.name} for ${durationSecs} seconds. Evidence logged to secure archive.`,
+      snapshotUrl: camera.rtspUrl,
+      coordinates: { lat: camera.lat, lng: camera.lng }
+    };
+    setAlerts(prev => [newAlert, ...prev]);
+    setActiveToastAlert(newAlert);
+  };
+
   const handleSaveFence = (cameraId: string, newFences: VirtualFence[]) => {
     setCameras(prev => prev.map(c => {
       if (c.id === cameraId) {
@@ -113,14 +137,18 @@ export default function App() {
 
   const handleTriggerSimulatedBreach = () => {
     tacticalAudio.playAlertSound('CRITICAL');
+    
+    // Find the camera to inject the breach on (default to the first available)
+    const breachCameraId = cameras[0]?.id || 'cam-bop-01';
+
     const newAlert: SecurityAlert = {
       id: `alert-sim-${Date.now()}`,
       eventId: `EV-${Date.now().toString().slice(-5)}`,
       timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
-      cameraId: 'cam-bop-01',
-      cameraName: 'BOP-01 Alpha Tower Panoramic',
-      bopName: 'BOP Alpha (Sector 4)',
-      sector: 'Sector 4 Zero-Line',
+      cameraId: breachCameraId,
+      cameraName: cameras[0]?.name || 'BOP-01 Alpha Tower Panoramic',
+      bopName: cameras[0]?.bopName || 'BOP Alpha (Sector 4)',
+      sector: cameras[0]?.sector || 'Sector 4 Zero-Line',
       category: 'INTRUSION',
       severity: 'CRITICAL',
       detectedObject: 'Rapid Perimeter Intrusion Group (3 Targets)',
@@ -128,14 +156,23 @@ export default function App() {
       ruleTriggered: 'RULE-01: Zero-Line Breach & Directional Inbound Crossing',
       snapshotUrl: '',
       tamperHash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-      status: 'NEW',
+      // Auto-acknowledge to higher authorities per requirements
+      status: 'ACKNOWLEDGED',
+      acknowledgedBy: 'SYSTEM AI AUTO-FORWARD (NAVY/ARMY)',
+      actionTaken: 'Critical Breach Auto-Reported to Higher Command',
       coordinates: { lat: 32.72195, lng: 74.85121 },
-      details: 'SIMULATED TACTICAL INJECTION: Rapid movement detected across restricted 150m buffer zone heading toward Indian side.',
+      details: 'CRITICAL BREACH TRIGGERED: AI auto-routed feed to priority view and dispatched automated telemetry to Navy/Army HQ.',
       videoClipDurationSecs: 30,
     };
 
     setAlerts(prev => [newAlert, ...prev]);
     setActiveToastAlert(newAlert);
+    
+    // Auto-focus priority view on the camera where the breach occurred
+    setActiveTab('monitoring');
+    setSelectedCameraId(breachCameraId);
+    setLayoutMode('1x1');
+
     setTimeout(() => {
       setActiveToastAlert(null);
     }, 8000);
@@ -224,15 +261,19 @@ export default function App() {
             cameras={cameras}
             alerts={alerts}
             selectedCameraId={selectedCameraId}
+            layoutMode={layoutMode}
+            onLayoutModeChange={setLayoutMode}
             onSelectCamera={handleSelectCamera}
             onCaptureSnapshot={handleCaptureSnapshot}
             onOpenFenceEditor={(cam) => setCalibratingCamera(cam)}
+            onSaveRecording={handleSaveRecording}
           />
         )}
 
         {activeTab === 'alerts' && (
           <AlertsPanel
             alerts={alerts}
+            cameras={cameras}
             onAcknowledgeAlert={handleAcknowledgeAlert}
             onDispatchQrf={handleDispatchQrf}
             onExportDossier={(alert) => {
