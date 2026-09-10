@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Camera, SecurityAlert } from '../types';
 import { APIProvider, Map, AdvancedMarker, Pin } from '@vis.gl/react-google-maps';
 import { 
+  Camera as CameraIcon,
   MapPin, 
   Eye, 
   Shield, 
@@ -104,7 +105,7 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({
         {/* Map Visual Canvas / SVG Stage */}
         <div className="flex-1 relative overflow-hidden bg-slate-950 tactical-grid flex items-center justify-center">
           {mapLayer === 'satellite' ? (
-            <APIProvider apiKey={import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ""}>
+            <APIProvider apiKey={(import.meta as any).env?.VITE_GOOGLE_MAPS_API_KEY || ""}>
               <div className="absolute inset-0 w-full h-full">
                 <Map 
                   mapId="DEMO_MAP_ID"

@@ -7,7 +7,9 @@ import {
   Map, 
   Car, 
   FileText,
-  Zap
+  Zap,
+  Radio,
+  Lock
 } from 'lucide-react';
 import { tacticalAudio } from '../utils/audio';
 
@@ -22,17 +24,21 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({
   activeTab,
   setActiveTab,
+  activeAlertCount,
+  criticalCount,
   onSimulateIncident,
 }) => {
   const [isMuted, setIsMuted] = useState(tacticalAudio.isMuted);
-  const [timeStr, setTimeStr] = useState('');
+  const [istTime, setIstTime] = useState('');
+  const [utcTime, setUtcTime] = useState('');
   const [dateStr, setDateStr] = useState('');
 
   useEffect(() => {
     const updateTime = () => {
       const now = new Date();
-      setTimeStr(now.toLocaleTimeString('en-US', { hour12: false }));
-      setDateStr(now.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' }));
+      setIstTime(now.toLocaleTimeString('en-US', { hour12: false }));
+      setUtcTime(now.toUTCString().slice(17, 25) + ' UTC');
+      setDateStr(now.toISOString().slice(0, 10));
     };
     updateTime();
     const interval = setInterval(updateTime, 1000);
@@ -45,62 +51,67 @@ export const Header: React.FC<HeaderProps> = ({
   };
 
   const navItems = [
-    { id: 'monitoring', label: 'LIVE MONITORING', icon: CameraIcon },
-    { id: 'alerts', label: 'INCIDENT ALERTS', icon: Shield },
-    { id: 'map', label: 'MAP VIEW', icon: Map },
-    { id: 'anpr_frs', label: 'ANPR / FRS DATABASE', icon: Car },
-    { id: 'evidence', label: 'EVIDENCE', icon: FileText }
+    { id: 'monitoring', label: 'LIVE SURVEILLANCE', icon: CameraIcon },
+    { id: 'alerts', label: 'INCIDENT LOG', icon: Shield, badge: activeAlertCount },
+    { id: 'map', label: 'TACTICAL GIS MAP', icon: Map },
+    { id: 'anpr_frs', label: 'ANPR & VEHICLE DATABASE', icon: Car },
+    { id: 'evidence', label: 'FORENSIC EVIDENCE', icon: FileText }
   ];
 
   return (
-    <header className="bg-slate-950 border-b border-slate-800/80 sticky top-0 z-40 select-none">
-      {/* Top Banner Status Bar */}
-      <div className="bg-slate-900 border-b border-slate-800/60 px-4 py-2 flex flex-wrap items-center justify-between text-xs font-mono-code text-slate-400">
-        <div className="flex items-center gap-6">
+    <header className="bg-slate-950 border-b border-slate-800 sticky top-0 z-40 select-none">
+      {/* Upper Defense Telemetry Banner */}
+      <div className="bg-slate-900 border-b border-slate-800 px-4 py-1.5 flex flex-wrap items-center justify-between text-xs font-mono-code text-slate-300">
+        <div className="flex items-center gap-5">
           <div className="flex items-center gap-2">
-            <Shield className="w-4 h-4 text-emerald-400" />
-            <span className="font-bold text-slate-200">BORDER SECURITY VMS</span>
+            <div className="p-1 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+              <Shield className="w-3.5 h-3.5" />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-white tracking-wider">
+                IBMS • INTEGRATED BORDER MANAGEMENT SYSTEM
+              </span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 border border-slate-700 hidden md:inline">
+                SUTLEJ CORPS HQ
+              </span>
+            </div>
           </div>
           
-          <div className="hidden sm:flex items-center gap-1.5 text-emerald-400 font-bold">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-            </span>
-            <span>NETWORK: CONNECTED</span>
+          <div className="hidden sm:flex items-center gap-1.5 text-[11px] text-emerald-400 font-semibold">
+            <Lock className="w-3 h-3 text-emerald-400" />
+            <span>DEF-NET SECURE (AES-256)</span>
           </div>
-          
-          <div className="hidden lg:flex items-center gap-2 text-slate-300">
-            <span>ACTIVE CAMERAS:</span>
-            <span className="text-emerald-400 font-bold">8/8</span>
-          </div>
-          
-          <div className="hidden lg:flex items-center gap-2 text-slate-300">
-            <span>SYSTEM HEALTH:</span>
-            <span className="text-emerald-400 font-bold">OPTIMAL</span>
+
+          <div className="hidden lg:flex items-center gap-2 text-[11px] text-slate-400">
+            <span>SENSORS:</span>
+            <span className="text-emerald-400 font-bold">8/8 ONLINE</span>
           </div>
         </div>
         
-        <div className="flex items-center gap-5">
-          <div className="flex items-center gap-2 text-slate-300 font-bold tracking-wider">
+        {/* Real Military Dual Clock: IST & UTC */}
+        <div className="flex items-center gap-4 text-xs font-mono-code">
+          <div className="hidden sm:flex items-center gap-2 text-slate-300">
             <span className="text-slate-400">{dateStr}</span>
-            <span className="text-amber-400">{timeStr}</span>
+            <span className="text-amber-400 font-bold">{istTime} IST</span>
+            <span className="text-slate-500 text-[10px]">({utcTime})</span>
           </div>
           
           <button
             onClick={toggleMute}
-            className={`flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] transition-colors ${
+            className={`flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] font-bold transition-colors ${
               isMuted 
-                ? 'bg-red-950/40 border-red-800/60 text-red-300' 
-                : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
+                ? 'bg-red-950/40 border-red-800/60 text-red-400' 
+                : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'
             }`}
+            title={isMuted ? "Unmute Tactical Chimes" : "Mute Tactical Chimes"}
           >
             {isMuted ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+            <span>{isMuted ? 'MUTED' : 'AUDIO ON'}</span>
           </button>
         </div>
       </div>
       
-      {/* Navigation Tabs */}
+      {/* Lower Navigation Strip */}
       <div className="px-4 flex flex-wrap items-center justify-between gap-4 bg-slate-950 border-b border-slate-800">
         <div className="flex items-center gap-1 overflow-x-auto scrollbar-none">
           {navItems.map((item) => {
@@ -110,14 +121,21 @@ export const Header: React.FC<HeaderProps> = ({
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id)}
-                className={`flex items-center gap-2 px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold whitespace-nowrap transition-all border-b-2 relative ${
+                className={`flex items-center gap-2 px-4 py-2 text-[11px] uppercase tracking-wider font-bold whitespace-nowrap transition-all border-b-2 relative ${
                   isActive
-                    ? 'border-emerald-400 text-emerald-400 bg-slate-900'
-                    : 'border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-900/60'
+                    ? 'border-amber-400 text-amber-400 bg-slate-900/90'
+                    : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
                 }`}
               >
-                <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-emerald-400' : 'text-slate-500'}`} />
+                <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-amber-400' : 'text-slate-500'}`} />
                 <span>{item.label}</span>
+                {Boolean(item.badge && item.badge > 0) && (
+                  <span className={`ml-1 px-1.5 py-0.2 rounded-full text-[9px] font-mono-code font-bold ${
+                    criticalCount > 0 ? 'bg-red-500 text-white' : 'bg-amber-500 text-slate-950'
+                  }`}>
+                    {item.badge}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -125,10 +143,11 @@ export const Header: React.FC<HeaderProps> = ({
         
         <button
           onClick={onSimulateIncident}
-          className="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded bg-slate-800 hover:bg-slate-700 text-amber-400 border border-slate-700 text-[10px] uppercase font-mono-code transition-all"
+          className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 text-amber-400 border border-slate-700 text-[10px] font-mono-code font-bold transition-all"
+          title="Trigger a test perimeter breach event for sensor verification"
         >
-          <Zap className="w-3 h-3" />
-          <span>Simulate Alerts</span>
+          <Zap className="w-3 h-3 text-amber-400" />
+          <span>RUN SECTOR TEST DRILL</span>
         </button>
       </div>
     </header>

@@ -1,10 +1,13 @@
-export type Severity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+export type Severity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'WARNING' | 'INFO';
 
 export type AlertCategory = 
   | 'INTRUSION' 
   | 'VIRTUAL_FENCE' 
   | 'ANPR_WATCHLIST' 
   | 'FACE_WATCHLIST' 
+  | 'FACE_MATCH'
+  | 'VEHICLE_TRACK'
+  | 'PERSON_TRACK'
   | 'LOITERING' 
   | 'NIGHT_MOVEMENT' 
   | 'UNUSUAL_GATHERING'
@@ -16,6 +19,8 @@ export type AlertStatus = 'NEW' | 'ACKNOWLEDGED' | 'DISPATCHED' | 'RESOLVED';
 export type CameraStatus = 'online' | 'warning' | 'offline';
 
 export type VisionFilterMode = 'day' | 'night' | 'thermal_white_hot' | 'thermal_ironbow';
+
+export type StreamMode = 'simulated' | 'video' | 'webcam';
 
 export interface BoundingBox {
   x: number; // 0 to 100%
@@ -32,7 +37,7 @@ export interface Detection {
   bbox: BoundingBox;
   trackId: number;
   speedKmh?: number;
-  direction?: 'North' | 'South' | 'East' | 'West' | 'Inbound' | 'Outbound';
+  direction?: 'North' | 'South' | 'East' | 'West' | 'Inbound' | 'Outbound' | 'Stationary';
   timestamp: string;
   // Specialized attributes
   plateNumber?: string;
@@ -42,7 +47,7 @@ export interface Detection {
     similarity: number;
     watchlistCategory: 'WANTED' | 'SUSPECT' | 'POI' | 'FRIENDLY_FORCE';
   };
-  behavior?: 'Normal Patrol' | 'Loitering' | 'Crawling/Prone' | 'Crossing Boundary' | 'Running';
+  behavior?: 'Normal Patrol' | 'Loitering' | 'Crawling/Prone' | 'Crossing Boundary' | 'Running' | 'Patrolling' | 'Inspection';
   dwellSeconds?: number;
 }
 
@@ -82,6 +87,9 @@ export interface Camera {
   altitudeMeters: number;
   nightVisionSupported: boolean;
   thermalSupported: boolean;
+  videoStreamUrl?: string;
+  backupVideoUrl?: string;
+  streamMode?: StreamMode;
   virtualFences: VirtualFence[];
   activeDetections: Detection[];
 }

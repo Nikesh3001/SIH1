@@ -14,7 +14,8 @@ import {
   HotlistVehicle, 
   WatchlistSubject, 
   VirtualFence,
-  PublicCameraBookmark
+  PublicCameraBookmark,
+  StreamMode
 } from './types';
 import { Header } from './components/Header';
 import { CameraGrid } from './components/CameraGrid';
@@ -120,7 +121,9 @@ export default function App() {
       status: 'NEW',
       details: `Operator initiated manual recording on ${camera.name} for ${durationSecs} seconds. Evidence logged to secure archive.`,
       snapshotUrl: camera.rtspUrl,
-      coordinates: { lat: camera.lat, lng: camera.lng }
+      coordinates: { lat: camera.lat, lng: camera.lng },
+      videoClipDurationSecs: durationSecs,
+      tamperHash: `sha256-${Math.random().toString(36).slice(2, 10)}${Math.random().toString(36).slice(2, 10)}`
     };
     setAlerts(prev => [newAlert, ...prev]);
     setActiveToastAlert(newAlert);
@@ -215,6 +218,49 @@ export default function App() {
     setActiveTab('monitoring');
   };
 
+  const handleTripwireBreached = (camera: Camera, fence: VirtualFence) => {
+    const newAlert: SecurityAlert = {
+      id: `alert-cv-${Date.now()}`,
+      eventId: `EVT-CV-${Date.now().toString(36).toUpperCase()}`,
+      timestamp: new Date().toLocaleTimeString('en-US', { hour12: false }),
+      cameraId: camera.id,
+      cameraName: camera.name,
+      bopName: camera.bopName,
+      sector: camera.sector,
+      category: 'INTRUSION',
+      severity: 'CRITICAL',
+      detectedObject: `Real-Time Tripwire Breach: ${fence.name} (${fence.type.toUpperCase()})`,
+      confidence: 0.94,
+      ruleTriggered: `OPTICAL CV: Motion vector crossed boundary '${fence.name}'`,
+      snapshotUrl: '',
+      tamperHash: 'cv-' + Math.random().toString(36).substring(2, 10),
+      status: 'NEW',
+      actionTaken: 'Autonomous Optical Alarm Generated & Recorded',
+      coordinates: { lat: camera.lat, lng: camera.lng },
+      details: `Live Optical Computer Vision engine detected a target crossing virtual tripwire line '${fence.name}'. High sensitivity optical displacement verified.`,
+      videoClipDurationSecs: 30,
+    };
+
+    setAlerts(prev => [newAlert, ...prev]);
+    setActiveToastAlert(newAlert);
+    setTimeout(() => {
+      setActiveToastAlert(null);
+    }, 6000);
+  };
+
+  const handleUpdateCameraStream = (cameraId: string, mode: StreamMode, streamUrl?: string) => {
+    setCameras(prev => prev.map(c => {
+      if (c.id === cameraId) {
+        return {
+          ...c,
+          streamMode: mode,
+          rtspUrl: streamUrl || c.rtspUrl
+        };
+      }
+      return c;
+    }));
+  };
+
   return (
     <div className="flex flex-col h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
       {/* Tactical App Header */}
@@ -267,6 +313,8 @@ export default function App() {
             onCaptureSnapshot={handleCaptureSnapshot}
             onOpenFenceEditor={(cam) => setCalibratingCamera(cam)}
             onSaveRecording={handleSaveRecording}
+            onTripwireBreached={handleTripwireBreached}
+            onUpdateCameraStream={handleUpdateCameraStream}
           />
         )}
 

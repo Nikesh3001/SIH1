@@ -1,28 +1,46 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Camera, VisionFilterMode } from '../types';
+import { Camera, VisionFilterMode, StreamMode, VirtualFence } from '../types';
 import { 
   Camera as CameraIcon, 
-  Crosshair, 
-  AlertTriangle, 
   Sliders, 
-  X, 
   RotateCcw,
-  Move,
   ZoomIn,
   ZoomOut,
   ChevronUp,
   ChevronDown,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Video,
+  Play,
+  Pause,
+  Radio,
+  Eye,
+  ShieldAlert,
+  Link,
+  Sun,
+  Flame,
+  Moon,
+  UserCheck,
+  Filter
 } from 'lucide-react';
+import { createInitialCameraTargets, updateSimulationStep, SimulatedTarget } from '../utils/motionSimulation';
+import { renderTacticalSimulation } from '../utils/canvasRenderer';
+import { TACTICAL_VIDEO_FEEDS } from '../data/videoStreams';
+import { createOpticalMotionTracker, playTacticalAlertChime } from '../utils/webcamVision';
+import { DEFAULT_DETECTION_FILTER, DetectionClassFilter } from '../utils/cocoLabels';
+import Hls from 'hls.js';
 
 interface CameraStreamProps {
   camera: Camera;
   isFocused?: boolean;
   isRecording?: boolean;
   filterMode?: VisionFilterMode;
+  streamMode?: StreamMode;
   onFilterModeChange?: (mode: VisionFilterMode) => void;
+  onStreamModeChange?: (mode: StreamMode) => void;
   onCaptureSnapshot?: (dataUrl: string, camera: Camera) => void;
+  onConfigureStream?: (camera: Camera) => void;
+  onTripwireBreached?: (camera: Camera, fence: VirtualFence) => void;
 }
 
 export const CameraStream: React.FC<CameraStreamProps> = ({
@@ -30,30 +48,130 @@ export const CameraStream: React.FC<CameraStreamProps> = ({
   isFocused = false,
   isRecording = false,
   filterMode = 'day',
+  streamMode: externalStreamMode,
+  onFilterModeChange,
+  onStreamModeChange,
+  onCaptureSnapshot,
+  onConfigureStream,
+  onTripwireBreached
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const osdCanvasRef = useRef<HTMLCanvasElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const [dimensions, setDimensions] = useState({ w: 0, h: 0 });
 
-  // Video Adjustment State
-  const [showAdjustments, setShowAdjustments] = useState(false);
-  const [brightness, setBrightness] = useState(100);
-  const [contrast, setContrast] = useState(100);
-  const [saturation, setSaturation] = useState(100);
+  // Stream Mode state (Default to 'video' for real surveillance footage)
+  const [streamMode, setStreamMode] = useState<StreamMode>(externalStreamMode || camera.streamMode || 'video');
+  const [showStreamMenu, setShowStreamMenu] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(true);
+  const [webcamActive, setWebcamActive] = useState(false);
+  const [videoError, setVideoError] = useState(false);
+  const webcamStreamRef = useRef<MediaStream | null>(null);
 
-  // PTZ State
+  // Optical Computer Vision Tracking Engine
+  const opticalTrackerRef = useRef(createOpticalMotionTracker());
+  const [activeBreachAlert, setActiveBreachAlert] = useState<string | null>(null);
+  const lastBreachAlertThrottleRef = useRef<number>(0);
+
+  // Class-Based Detection Filter State (Default: Person Only, COCO Class ID: 1)
+  const [filterPersonOnly, setFilterPersonOnly] = useState<boolean>(true);
+  const [filteredTelemetry, setFilteredTelemetry] = useState<{
+    nonHumanCount: number;
+    classes: string[];
+    totalTracked: number;
+  }>({ nonHumanCount: 0, classes: [], totalTracked: 0 });
+
+  // Digital PTZ State
   const [showPTZ, setShowPTZ] = useState(false);
   const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 }); // percentage
+  const [pan, setPan] = useState({ x: 0, y: 0 });
 
+  // Simulated dynamic targets ref
+  const targetsRef = useRef<SimulatedTarget[]>(createInitialCameraTargets(camera));
+
+  useEffect(() => {
+    if (externalStreamMode) {
+      setStreamMode(externalStreamMode);
+    }
+  }, [externalStreamMode]);
+
+  const handleSelectStreamMode = (mode: StreamMode) => {
+    setStreamMode(mode);
+    setShowStreamMenu(false);
+    if (onStreamModeChange) onStreamModeChange(mode);
+  };
+
+  // Video feed resolution from config
+  const feedConfig = TACTICAL_VIDEO_FEEDS[camera.id] || TACTICAL_VIDEO_FEEDS['cam-01'];
+  const primaryVideoUrl = camera.videoStreamUrl || feedConfig?.videoUrl;
+  const backupVideoUrl = camera.backupVideoUrl || feedConfig?.backupVideoUrl;
+  const activeVideoUrl = videoError ? backupVideoUrl : primaryVideoUrl;
+
+  // Setup Real Webcam or Video Stream
+  useEffect(() => {
+    if (streamMode === 'webcam') {
+      let isMounted = true;
+      navigator.mediaDevices?.getUserMedia({ video: { width: 1280, height: 720 }, audio: false })
+        .then(stream => {
+          if (!isMounted) {
+            stream.getTracks().forEach(t => t.stop());
+            return;
+          }
+          webcamStreamRef.current = stream;
+          setWebcamActive(true);
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+            videoRef.current.play().catch(() => {});
+          }
+        })
+        .catch(err => {
+          console.warn("Webcam access error:", err);
+          if (isMounted) {
+            setStreamMode('video');
+          }
+        });
+
+      return () => {
+        isMounted = false;
+        if (webcamStreamRef.current) {
+          webcamStreamRef.current.getTracks().forEach(t => t.stop());
+          webcamStreamRef.current = null;
+        }
+        setWebcamActive(false);
+      };
+    } else {
+      // Release webcam if active
+      if (webcamStreamRef.current) {
+        webcamStreamRef.current.getTracks().forEach(t => t.stop());
+        webcamStreamRef.current = null;
+        setWebcamActive(false);
+      }
+
+      // Handle HLS vs MP4 video loop
+      if (streamMode === 'video' && videoRef.current && activeVideoUrl) {
+        if (activeVideoUrl.endsWith('.m3u8') && Hls.isSupported()) {
+          const hls = new Hls();
+          hls.loadSource(activeVideoUrl);
+          hls.attachMedia(videoRef.current);
+          return () => hls.destroy();
+        } else {
+          videoRef.current.src = activeVideoUrl;
+          videoRef.current.play().catch(() => {});
+        }
+      }
+    }
+  }, [streamMode, activeVideoUrl]);
+
+  // Digital PTZ Handlers
   const handleZoom = (newZoom: number) => {
-    setZoom(newZoom);
-    if (newZoom === 1) {
+    const clamped = Math.max(1, Math.min(4, newZoom));
+    setZoom(clamped);
+    if (clamped === 1) {
       setPan({ x: 0, y: 0 });
     } else {
       setPan(p => {
-        const maxPan = ((newZoom - 1) / newZoom) * 50;
+        const maxPan = ((clamped - 1) / clamped) * 45;
         return {
           x: Math.max(-maxPan, Math.min(maxPan, p.x)),
           y: Math.max(-maxPan, Math.min(maxPan, p.y))
@@ -65,26 +183,28 @@ export const CameraStream: React.FC<CameraStreamProps> = ({
   const handlePan = (dx: number, dy: number) => {
     if (zoom === 1) return;
     setPan(p => {
-      const maxPan = ((zoom - 1) / zoom) * 50; 
-      const newX = Math.max(-maxPan, Math.min(maxPan, p.x + dx));
-      const newY = Math.max(-maxPan, Math.min(maxPan, p.y + dy));
-      return { x: newX, y: newY };
+      const maxPan = ((zoom - 1) / zoom) * 45; 
+      return {
+        x: Math.max(-maxPan, Math.min(maxPan, p.x + dx)),
+        y: Math.max(-maxPan, Math.min(maxPan, p.y + dy))
+      };
     });
   };
 
+  // ResizeObserver for canvas pixel-matching
   useEffect(() => {
     if (!containerRef.current) return;
     const observer = new ResizeObserver((entries) => {
       if (entries[0]) {
         const { width, height } = entries[0].contentRect;
-        setDimensions({ w: width, h: height });
+        setDimensions({ w: Math.floor(width), h: Math.floor(height) });
       }
     });
     observer.observe(containerRef.current);
     return () => observer.disconnect();
   }, []);
 
-  // AI Render loop
+  // Clean Military C2 Render loop (No cartoon figures, only genuine military OSD & tripwires)
   useEffect(() => {
     if (!canvasRef.current || !osdCanvasRef.current || dimensions.w === 0 || dimensions.h === 0) return;
     
@@ -102,389 +222,413 @@ export const CameraStream: React.FC<CameraStreamProps> = ({
 
     let animationId: number;
     let step = 0;
+    let lastTime = performance.now();
 
-    const render = () => {
+    const render = (time: number) => {
+      const deltaTime = Math.min(0.06, Math.max(0.005, (time - lastTime) / 1000));
+      lastTime = time;
       step++;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      const w = canvas.width;
-      const h = canvas.height;
 
-      // Draw Virtual Fences
-      if (camera.virtualFences) {
-        camera.virtualFences.forEach(fence => {
-          if (!fence.active) return;
-          
-          ctx.save();
-          ctx.beginPath();
-          fence.points.forEach((pt, i) => {
-            const px = (pt.x / 100) * w;
-            const py = (pt.y / 100) * h;
-            if (i === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
-          });
-          
-          if (fence.type === 'restricted_zone') {
-            ctx.closePath();
-            ctx.fillStyle = `${fence.color}33`;
-            ctx.fill();
+      let currentTargets = targetsRef.current;
+
+      // Computer Vision motion evaluation on live video/webcam
+      if ((streamMode === 'webcam' || streamMode === 'video') && videoRef.current && videoRef.current.readyState >= 2) {
+        try {
+          const cvResult = opticalTrackerRef.current.processFrame(
+            videoRef.current,
+            camera.virtualFences,
+            24,
+            deltaTime,
+            {
+              personOnly: filterPersonOnly,
+              allowedClasses: filterPersonOnly ? ['person'] : []
+            }
+          );
+
+          if (cvResult.breachedFence) {
+            const now = Date.now();
+            if (now - lastBreachAlertThrottleRef.current > 4000) {
+              lastBreachAlertThrottleRef.current = now;
+              playTacticalAlertChime('warning');
+              setActiveBreachAlert(cvResult.breachedFence.name);
+              setTimeout(() => setActiveBreachAlert(null), 3500);
+              if (onTripwireBreached) {
+                onTripwireBreached(camera, cvResult.breachedFence);
+              }
+            }
           }
-          
-          ctx.strokeStyle = fence.color;
-          ctx.lineWidth = 2;
-          ctx.setLineDash([5, 5]);
-          ctx.stroke();
 
-          // Fence label
-          const firstPt = fence.points[0];
-          ctx.fillStyle = fence.color;
-          ctx.font = '10px monospace';
-          ctx.fillText(fence.name, (firstPt.x / 100) * w, ((firstPt.y / 100) * h) - 5);
-          ctx.restore();
-        });
-      }
-
-      // Draw AI Detections
-      if (camera.activeDetections) {
-        camera.activeDetections.forEach(det => {
-          const bx = (det.bbox.x / 100) * w;
-          const by = (det.bbox.y / 100) * h;
-          const bw = (det.bbox.w / 100) * w;
-          const bh = (det.bbox.h / 100) * h;
-
-          const isAlert = det.confidence > 0.95 || det.type === 'vehicle';
-          const color = isAlert ? '#ef4444' : '#10b981';
-
-          // Bounding Box
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 2;
-          ctx.strokeRect(bx, by, bw, bh);
-
-          // Corner markers
-          const l = 10;
-          ctx.beginPath();
-          // TL
-          ctx.moveTo(bx, by + l); ctx.lineTo(bx, by); ctx.lineTo(bx + l, by);
-          // TR
-          ctx.moveTo(bx + bw - l, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + l);
-          // BL
-          ctx.moveTo(bx, by + bh - l); ctx.lineTo(bx, by + bh); ctx.lineTo(bx + l, by + bh);
-          // BR
-          ctx.moveTo(bx + bw - l, by + bh); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw, by + bh - l);
-          ctx.stroke();
-
-          // Label
-          ctx.fillStyle = color;
-          ctx.fillRect(bx, by - 20, bw, 20);
-          ctx.fillStyle = '#ffffff';
-          ctx.font = 'bold 10px monospace';
-          ctx.fillText(det.label, bx + 4, by - 6);
-
-          // Targeting crosshair
-          if (step % 60 < 30 && isAlert) {
-            ctx.strokeStyle = 'rgba(239, 68, 68, 0.5)';
-            ctx.beginPath();
-            ctx.moveTo(bx + bw/2, by - 10);
-            ctx.lineTo(bx + bw/2, by + bh + 10);
-            ctx.moveTo(bx - 10, by + bh/2);
-            ctx.lineTo(bx + bw + 10, by + bh/2);
-            ctx.stroke();
+          if (streamMode === 'webcam') {
+            currentTargets = cvResult.targets;
+            targetsRef.current = cvResult.targets;
+            if (cvResult.filteredNonHumanCount !== undefined) {
+              setFilteredTelemetry({
+                nonHumanCount: cvResult.filteredNonHumanCount,
+                classes: cvResult.filteredClasses,
+                totalTracked: cvResult.totalTrackedCount
+              });
+            }
+          } else {
+            targetsRef.current = updateSimulationStep(targetsRef.current, deltaTime, camera.virtualFences);
+            currentTargets = targetsRef.current;
           }
-        });
-      }
-
-      // OSD (Drawn on separate unscaled canvas)
-      osdCtx.clearRect(0, 0, osdCanvas.width, osdCanvas.height);
-      osdCtx.fillStyle = '#38bdf8';
-      osdCtx.font = '10px monospace';
-      osdCtx.shadowColor = '#000000';
-      osdCtx.shadowBlur = 4;
-      osdCtx.fillText(`${camera.code} | LIVE`, 10, 20);
-      
-      if (isRecording) {
-        if (step % 60 < 30) {
-          osdCtx.fillStyle = '#ef4444';
-          osdCtx.beginPath();
-          osdCtx.arc(80, 16, 3, 0, Math.PI * 2);
-          osdCtx.fill();
+        } catch {
+          if (streamMode === 'webcam') {
+            currentTargets = [];
+            targetsRef.current = [];
+          } else {
+            targetsRef.current = updateSimulationStep(targetsRef.current, deltaTime, camera.virtualFences);
+            currentTargets = targetsRef.current;
+          }
         }
-        osdCtx.fillStyle = '#ef4444';
-        osdCtx.fillText('REC', 88, 20);
+      } else {
+        targetsRef.current = updateSimulationStep(targetsRef.current, deltaTime, camera.virtualFences);
+        currentTargets = targetsRef.current;
       }
-      
-      const now = new Date();
-      osdCtx.textAlign = 'right';
-      osdCtx.fillStyle = '#fbbf24';
-      osdCtx.fillText(`${now.toISOString().slice(11, 19)}`, w - 10, 20);
+
+      // Render clean C2 military overlay
+      renderTacticalSimulation({
+        ctx,
+        osdCtx,
+        width: canvas.width,
+        height: canvas.height,
+        camera,
+        targets: currentTargets,
+        step,
+        scanlineY: 0,
+        isRecording,
+        filterMode,
+        pan,
+        zoom,
+        showAnalytics: true
+      });
 
       animationId = requestAnimationFrame(render);
     };
 
-    render();
+    animationId = requestAnimationFrame(render);
 
     return () => {
       cancelAnimationFrame(animationId);
     };
-  }, [dimensions, camera, isRecording]);
+  }, [dimensions, camera, isRecording, filterMode, pan, zoom, streamMode, filterPersonOnly]);
 
-  const hasDetections = camera.activeDetections && camera.activeDetections.length > 0;
-
-  const resetAdjustments = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setBrightness(100);
-    setContrast(100);
-    setSaturation(100);
+  // Video Filter Shaders (Thermal, NVG, Day)
+  const getFilterStyle = () => {
+    if (camera.type === 'thermal_ir' || filterMode === 'thermal_white_hot') {
+      return 'grayscale(100%) contrast(160%) brightness(110%) invert(100%)';
+    } else if (filterMode === 'thermal_ironbow') {
+      return 'contrast(170%) hue-rotate(190deg) saturate(180%)';
+    } else if (filterMode === 'night') {
+      return 'grayscale(80%) sepia(40%) hue-rotate(80deg) brightness(90%) contrast(130%)';
+    }
+    return 'none';
   };
 
-  const getFilterStyle = () => {
-    let filterString = `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%)`;
-    if (camera.type === 'thermal_ir') {
-      // Base thermal effect combined with user adjustments
-      filterString = `grayscale(100%) brightness(${brightness}%) contrast(${Math.max(125, contrast)}%) saturate(${saturation}%)`;
+  // High-Resolution Snapshot Capture
+  const handleCapture = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!onCaptureSnapshot) return;
+
+    const offscreen = document.createElement('canvas');
+    offscreen.width = dimensions.w || 1280;
+    offscreen.height = dimensions.h || 720;
+    const offCtx = offscreen.getContext('2d');
+    if (!offCtx) return;
+
+    if (videoRef.current && videoRef.current.readyState >= 2) {
+      offCtx.drawImage(videoRef.current, 0, 0, offscreen.width, offscreen.height);
+      if (canvasRef.current) offCtx.drawImage(canvasRef.current, 0, 0);
+      if (osdCanvasRef.current) offCtx.drawImage(osdCanvasRef.current, 0, 0);
+      onCaptureSnapshot(offscreen.toDataURL('image/jpeg', 0.95), camera);
+    } else {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.src = camera.rtspUrl;
+      img.onload = () => {
+        offCtx.drawImage(img, 0, 0, offscreen.width, offscreen.height);
+        if (canvasRef.current) offCtx.drawImage(canvasRef.current, 0, 0);
+        if (osdCanvasRef.current) offCtx.drawImage(osdCanvasRef.current, 0, 0);
+        onCaptureSnapshot(offscreen.toDataURL('image/jpeg', 0.95), camera);
+      };
     }
-    return filterString;
   };
 
   return (
     <div 
       ref={containerRef} 
-      className={`relative w-full h-full bg-slate-900 overflow-hidden border group ${
-        isFocused ? 'border-amber-500 shadow-lg shadow-amber-500/20' : 'border-slate-800'
+      className={`relative w-full h-full bg-slate-950 overflow-hidden border group select-none transition-all ${
+        isFocused ? 'border-amber-500/90 ring-1 ring-amber-500/40' : 'border-slate-800/80 hover:border-slate-700'
       }`}
     >
-      {/* Fallback pattern if no image */}
-      <div className="absolute inset-0 pattern-grid-lg text-slate-800/20"></div>
-
-      // Actual Footage Image
+      {/* Real Live Video Stream (Full Hardware Accelerated Playback) */}
       <div 
-        className="absolute inset-0 transition-transform duration-300 origin-center"
+        className="absolute inset-0 transition-transform duration-200 origin-center bg-black"
         style={{ transform: `scale(${zoom}) translate(${pan.x}%, ${pan.y}%)` }}
       >
-        <img 
-          src={camera.rtspUrl} 
-          alt={camera.name}
-          className="absolute inset-0 w-full h-full object-cover transition-opacity duration-1000"
-          style={{ filter: getFilterStyle() }}
-        />
+        {streamMode === 'video' || streamMode === 'webcam' ? (
+          <video
+            ref={videoRef}
+            autoPlay
+            loop
+            muted
+            playsInline
+            crossOrigin="anonymous"
+            className="absolute inset-0 w-full h-full object-cover"
+            style={{ filter: getFilterStyle() }}
+            onPlay={() => setIsPlaying(true)}
+            onPause={() => setIsPlaying(false)}
+            onError={() => setVideoError(true)}
+          />
+        ) : (
+          <img 
+            src={camera.rtspUrl} 
+            alt={camera.name}
+            className="absolute inset-0 w-full h-full object-cover"
+            style={{ filter: getFilterStyle() }}
+          />
+        )}
 
-        {/* AI Canvas Overlay (Scaled with PTZ) */}
+        {/* Tactical HUD Overlay (Tripwires & Target Designators) */}
         <canvas
           ref={canvasRef}
           className="absolute inset-0 pointer-events-none"
         />
       </div>
 
-      {/* OSD Overlay (Unscaled) */}
+      {/* Military OSD Overlay (Fixed, Unscaled HUD) */}
       <canvas
         ref={osdCanvasRef}
         className="absolute inset-0 pointer-events-none z-10"
       />
 
-      {/* Settings Button (visible on hover or focus) */}
-      <div className="absolute bottom-2 right-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            setShowPTZ(!showPTZ);
-            setShowAdjustments(false);
-          }}
-          className={`p-1.5 rounded-md backdrop-blur border transition-colors ${
-            showPTZ 
-              ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400' 
-              : 'bg-slate-900/60 border-slate-700/50 text-slate-300 hover:bg-slate-800/80 hover:text-white'
-          }`}
-          title="PTZ Controls"
-        >
-          <Move className="w-3.5 h-3.5" />
-        </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            setShowAdjustments(!showAdjustments);
-            setShowPTZ(false);
-          }}
-          className={`p-1.5 rounded-md backdrop-blur border transition-colors ${
-            showAdjustments 
-              ? 'bg-amber-500/20 border-amber-500/50 text-amber-400' 
-              : 'bg-slate-900/60 border-slate-700/50 text-slate-300 hover:bg-slate-800/80 hover:text-white'
-          }`}
-          title="Adjust Video Feed"
-        >
-          <Sliders className="w-3.5 h-3.5" />
-        </button>
+      {/* Discrete Perimeter Breach Alert Notification */}
+      {activeBreachAlert && (
+        <div className="absolute top-2 inset-x-4 z-30 flex items-center justify-center pointer-events-none">
+          <div className="px-3 py-1 bg-red-600/90 text-white font-mono-code text-[11px] font-bold rounded shadow-lg border border-red-400 flex items-center gap-2">
+            <ShieldAlert className="w-3.5 h-3.5 text-amber-300" />
+            <span>SECURITY BREACH: {activeBreachAlert}</span>
+          </div>
+        </div>
+      )}
+
+      {/* COCO Standard Detection Class Filter Status Pill */}
+      {streamMode === 'webcam' && (
+        <div className="absolute top-2 left-2 z-20 flex items-center gap-1.5 pointer-events-none">
+          <div className={`px-2 py-0.5 rounded text-[10px] font-mono-code flex items-center gap-1.5 border shadow-md backdrop-blur-md ${
+            filterPersonOnly 
+              ? 'bg-slate-950/85 text-emerald-400 border-emerald-500/40' 
+              : 'bg-slate-950/85 text-amber-400 border-amber-500/40'
+          }`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${filterPersonOnly ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+            <span className="font-bold">{filterPersonOnly ? 'COCO: PERSON ONLY (CLASS 01)' : 'COCO: ALL OBJECTS'}</span>
+            {filterPersonOnly && filteredTelemetry.nonHumanCount > 0 && (
+              <span className="text-slate-400 border-l border-slate-700 pl-1.5">
+                FILTERED: {filteredTelemetry.nonHumanCount} [{filteredTelemetry.classes.map(c => c.toUpperCase()).join(', ')}]
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Stream Source Mode Indicator (Subtle Top Center) */}
+      <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity">
+        <span className="px-2 py-0.5 rounded bg-slate-950/80 border border-slate-800 text-[10px] font-mono-code text-slate-400">
+          SOURCE: {streamMode === 'webcam' ? 'LOCAL WEBCAM' : streamMode === 'video' ? 'TACTICAL FEED' : 'SIMULATION'}
+        </span>
       </div>
 
-      {/* PTZ Overlay */}
-      {showPTZ && (
-        <div 
-          className="absolute bottom-10 right-2 z-30 w-48 bg-slate-950/90 backdrop-blur border border-slate-700 rounded shadow-2xl p-2 font-sans"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 mb-2">
-            <span className="text-[10px] font-bold text-slate-300 uppercase tracking-wider font-mono-code flex items-center gap-1.5">
-              <Move className="w-3 h-3 text-emerald-400" />
-              PTZ Control
-            </span>
-            <div className="flex items-center gap-1">
-              <button onClick={() => { handleZoom(1); }} className="p-0.5 text-slate-500 hover:text-slate-300 transition-colors" title="Reset">
-                <RotateCcw className="w-3 h-3" />
-              </button>
-              <button 
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowPTZ(false);
-                }} 
-                className="p-0.5 text-slate-500 hover:text-red-400 transition-colors"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
-          
-          <div className="flex flex-col items-center gap-2 py-1">
-            {/* Zoom Controls */}
-            <div className="flex items-center justify-between w-full bg-slate-900/80 rounded border border-slate-800 p-1">
-              <button 
-                onClick={(e) => { e.stopPropagation(); handleZoom(Math.max(1, zoom - 0.5)); }} 
-                disabled={zoom === 1} 
-                className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
-              >
-                <ZoomOut className="w-4 h-4" />
-              </button>
-              <span className="text-xs font-mono-code font-bold text-emerald-400 w-10 text-center">{zoom.toFixed(1)}x</span>
-              <button 
-                onClick={(e) => { e.stopPropagation(); handleZoom(Math.min(4, zoom + 0.5)); }} 
-                disabled={zoom === 4} 
-                className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
-              >
-                <ZoomIn className="w-4 h-4" />
-              </button>
-            </div>
-            
-            {/* D-Pad */}
-            <div className="grid grid-cols-3 gap-1 mt-1">
-              <div />
-              <button 
-                onClick={(e) => { e.stopPropagation(); handlePan(0, 5); }} 
-                disabled={zoom === 1} 
-                className="p-2 bg-slate-800/80 hover:bg-slate-700 rounded transition-colors disabled:opacity-30 disabled:hover:bg-slate-800/80 shadow-sm"
-              >
-                <ChevronUp className="w-4 h-4 text-slate-300" />
-              </button>
-              <div />
-              
-              <button 
-                onClick={(e) => { e.stopPropagation(); handlePan(5, 0); }} 
-                disabled={zoom === 1} 
-                className="p-2 bg-slate-800/80 hover:bg-slate-700 rounded transition-colors disabled:opacity-30 disabled:hover:bg-slate-800/80 shadow-sm"
-              >
-                <ChevronLeft className="w-4 h-4 text-slate-300" />
-              </button>
-              <div className="flex items-center justify-center">
-                <div className={`w-2 h-2 rounded-full ${zoom > 1 ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-slate-700'}`}></div>
-              </div>
-              <button 
-                onClick={(e) => { e.stopPropagation(); handlePan(-5, 0); }} 
-                disabled={zoom === 1} 
-                className="p-2 bg-slate-800/80 hover:bg-slate-700 rounded transition-colors disabled:opacity-30 disabled:hover:bg-slate-800/80 shadow-sm"
-              >
-                <ChevronRight className="w-4 h-4 text-slate-300" />
-              </button>
-              
-              <div />
-              <button 
-                onClick={(e) => { e.stopPropagation(); handlePan(0, -5); }} 
-                disabled={zoom === 1} 
-                className="p-2 bg-slate-800/80 hover:bg-slate-700 rounded transition-colors disabled:opacity-30 disabled:hover:bg-slate-800/80 shadow-sm"
-              >
-                <ChevronDown className="w-4 h-4 text-slate-300" />
-              </button>
-              <div />
-            </div>
-          </div>
+      {/* Clean Military Tactical Control Bar (Appears on Hover or Focused) */}
+      <div className="absolute bottom-2 right-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1.5 bg-slate-950/90 backdrop-blur-md border border-slate-700/80 rounded-md p-1 shadow-xl">
+        {/* COCO Standard Detection Filter Switcher */}
+        <div className="flex items-center border-r border-slate-800 pr-1.5">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setFilterPersonOnly(!filterPersonOnly);
+            }}
+            className={`px-1.5 py-1 rounded text-[10px] font-mono-code font-bold flex items-center gap-1 transition-colors ${
+              filterPersonOnly 
+                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' 
+                : 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+            }`}
+            title={filterPersonOnly 
+              ? "COCO Filter: Active. Only 'person' triggers boxes and alerts. Inanimate objects (bottles, cups, laptops, etc.) are suppressed. Click to toggle." 
+              : "COCO Filter: Inactive. All object classes displayed. Click to restrict to 'person' only."
+            }
+          >
+            <UserCheck className="w-3 h-3" />
+            <span>{filterPersonOnly ? 'PERSON ONLY' : 'ALL OBJECTS'}</span>
+          </button>
         </div>
-      )}
 
-      {/* Video Adjustment Overlay */}
-      {showAdjustments && (
-        <div 
-          className="absolute bottom-10 right-2 z-30 w-48 bg-slate-950/90 backdrop-blur border border-slate-700 rounded shadow-2xl p-2 font-sans"
-          onClick={(e) => e.stopPropagation()} // Prevent selecting the camera while interacting
+        {/* Optics Filter Switcher */}
+        <div className="flex items-center gap-0.5 border-r border-slate-800 pr-1.5">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onFilterModeChange && onFilterModeChange('day');
+            }}
+            className={`px-1.5 py-1 rounded text-[10px] font-mono-code font-bold transition-colors ${
+              filterMode === 'day' 
+                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' 
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+            title="Day Optics"
+          >
+            DAY
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onFilterModeChange && onFilterModeChange('thermal_white_hot');
+            }}
+            className={`px-1.5 py-1 rounded text-[10px] font-mono-code font-bold transition-colors ${
+              filterMode === 'thermal_white_hot' 
+                ? 'bg-red-500/20 text-red-400 border border-red-500/40' 
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+            title="Thermal White-Hot"
+          >
+            FLIR
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onFilterModeChange && onFilterModeChange('night');
+            }}
+            className={`px-1.5 py-1 rounded text-[10px] font-mono-code font-bold transition-colors ${
+              filterMode === 'night' 
+                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' 
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+            title="Night Vision (NVG)"
+          >
+            NVG
+          </button>
+        </div>
+
+        {/* Digital PTZ Zoom Controls */}
+        <div className="flex items-center gap-0.5 border-r border-slate-800 pr-1.5">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleZoom(zoom - 0.5);
+            }}
+            disabled={zoom <= 1}
+            className="p-1 rounded text-slate-400 hover:text-white disabled:opacity-30 transition-colors"
+            title="Zoom Out"
+          >
+            <ZoomOut className="w-3.5 h-3.5" />
+          </button>
+          <span className="text-[10px] font-mono-code text-slate-300 w-8 text-center">
+            {zoom.toFixed(1)}x
+          </span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleZoom(zoom + 0.5);
+            }}
+            disabled={zoom >= 4}
+            className="p-1 rounded text-slate-400 hover:text-white disabled:opacity-30 transition-colors"
+            title="Zoom In"
+          >
+            <ZoomIn className="w-3.5 h-3.5" />
+          </button>
+          {zoom > 1 && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleZoom(1);
+              }}
+              className="p-1 rounded text-amber-400 hover:text-amber-300"
+              title="Reset Zoom"
+            >
+              <RotateCcw className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+
+        {/* Snapshot Capture */}
+        <button
+          onClick={handleCapture}
+          className="p-1 rounded text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
+          title="Capture Forensic Snapshot"
         >
-          <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 mb-2">
-            <span className="text-[10px] font-bold text-slate-300 uppercase tracking-wider font-mono-code flex items-center gap-1.5">
-              <Sliders className="w-3 h-3 text-amber-400" />
-              Adjust Feed
-            </span>
-            <div className="flex items-center gap-1">
-              <button onClick={resetAdjustments} className="p-0.5 text-slate-500 hover:text-slate-300 transition-colors" title="Reset">
-                <RotateCcw className="w-3 h-3" />
-              </button>
-              <button 
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowAdjustments(false);
-                }} 
-                className="p-0.5 text-slate-500 hover:text-red-400 transition-colors"
+          <CameraIcon className="w-3.5 h-3.5" />
+        </button>
+
+        {/* Stream Source Selector Menu */}
+        <div className="relative">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowStreamMenu(!showStreamMenu);
+            }}
+            className={`p-1 rounded transition-colors ${
+              streamMode === 'webcam' 
+                ? 'bg-purple-500/20 text-purple-300' 
+                : 'text-slate-300 hover:text-white hover:bg-slate-800'
+            }`}
+            title="Change Video Feed Source"
+          >
+            <Video className="w-3.5 h-3.5" />
+          </button>
+
+          {showStreamMenu && (
+            <div 
+              className="absolute bottom-8 right-0 w-52 bg-slate-950 border border-slate-700 rounded shadow-2xl p-1 z-50 text-xs font-mono-code"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-2 py-1 text-[10px] text-slate-400 font-bold uppercase tracking-wider border-b border-slate-800">
+                Stream Input Feed
+              </div>
+              <button
+                onClick={() => handleSelectStreamMode('video')}
+                className={`w-full text-left px-2 py-1.5 rounded flex items-center justify-between transition-colors ${
+                  streamMode === 'video' ? 'bg-slate-800 text-emerald-400 font-bold' : 'text-slate-300 hover:bg-slate-900'
+                }`}
               >
-                <X className="w-3.5 h-3.5" />
+                <span>Live Tactical Feed (1080p)</span>
+                <span className="text-[9px] text-slate-500">Loop</span>
               </button>
+              <button
+                onClick={() => handleSelectStreamMode('webcam')}
+                className={`w-full text-left px-2 py-1.5 rounded flex items-center justify-between transition-colors ${
+                  streamMode === 'webcam' ? 'bg-slate-800 text-purple-400 font-bold' : 'text-slate-300 hover:bg-slate-900'
+                }`}
+              >
+                <span>Local Sentry Camera (Webcam)</span>
+                <span className="text-[9px] text-slate-500">USB/Cam</span>
+              </button>
+              <button
+                onClick={() => handleSelectStreamMode('simulated')}
+                className={`w-full text-left px-2 py-1.5 rounded flex items-center justify-between transition-colors ${
+                  streamMode === 'simulated' ? 'bg-slate-800 text-sky-400 font-bold' : 'text-slate-300 hover:bg-slate-900'
+                }`}
+              >
+                <span>Autonomous Patrol Sim</span>
+                <span className="text-[9px] text-slate-500">AI</span>
+              </button>
+              {onConfigureStream && (
+                <>
+                  <div className="my-1 border-t border-slate-800"></div>
+                  <button
+                    onClick={() => {
+                      setShowStreamMenu(false);
+                      onConfigureStream(camera);
+                    }}
+                    className="w-full text-left px-2 py-1.5 rounded text-sky-400 hover:bg-slate-900 transition-colors flex items-center gap-1.5"
+                  >
+                    <Link className="w-3 h-3" />
+                    <span>Configure HLS / URL...</span>
+                  </button>
+                </>
+              )}
             </div>
-          </div>
-          
-          <div className="space-y-3">
-            {/* Brightness */}
-            <div className="space-y-1">
-              <div className="flex justify-between text-[10px] font-mono-code text-slate-400">
-                <span>BRT</span>
-                <span>{brightness}%</span>
-              </div>
-              <input 
-                type="range" min="20" max="200" value={brightness} 
-                onChange={(e) => setBrightness(Number(e.target.value))}
-                className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500" 
-              />
-            </div>
-            {/* Contrast */}
-            <div className="space-y-1">
-              <div className="flex justify-between text-[10px] font-mono-code text-slate-400">
-                <span>CON</span>
-                <span>{contrast}%</span>
-              </div>
-              <input 
-                type="range" min="20" max="250" value={contrast} 
-                onChange={(e) => setContrast(Number(e.target.value))}
-                className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500" 
-              />
-            </div>
-            {/* Saturation */}
-            <div className="space-y-1">
-              <div className="flex justify-between text-[10px] font-mono-code text-slate-400">
-                <span>SAT</span>
-                <span>{saturation}%</span>
-              </div>
-              <input 
-                type="range" min="0" max="300" value={saturation} 
-                onChange={(e) => setSaturation(Number(e.target.value))}
-                className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500" 
-              />
-            </div>
-          </div>
+          )}
         </div>
-      )}
-      
-      {/* UI Accents */}
-      {isFocused && !showAdjustments && (
-        <div className="absolute top-0 right-0 p-1 bg-amber-500 text-slate-950 text-[10px] font-bold font-mono-code flex items-center gap-1 shadow-md z-10">
-          <Crosshair className="w-3 h-3" />
-          <span>FOCUSED</span>
-        </div>
-      )}
-      
-      {hasDetections && !isFocused && !showAdjustments && (
-        <div className="absolute top-1 right-1">
-          <div className="w-3 h-3 rounded-full bg-red-500 animate-ping"></div>
-        </div>
-      )}
+      </div>
     </div>
   );
 };
